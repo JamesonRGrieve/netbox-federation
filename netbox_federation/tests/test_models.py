@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Model tests against a real DB (no mocks): creation, str, colors, uniqueness, cascade, and the
 secret-ref policy (refs are paths, never secret values)."""
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.utils import IntegrityError
 from django.test import TestCase
@@ -28,8 +29,19 @@ class FederationRealmModelTest(TestCase):
         r = make_realm("saml-idp", protocol=FederationProtocolChoices.SAML)
         r.signing_key_ref = "federation/saml-idp/signing-key"
         r.entity_id = "https://saml-idp.example.org/metadata"
+        r.full_clean()
         r.save()
         self.assertEqual(r.signing_key_ref, "federation/saml-idp/signing-key")  # a path
+
+    def test_signing_key_ref_rejects_inline_secret(self):
+        r = make_realm("idp2", protocol=FederationProtocolChoices.SAML)
+        # a bare value (no path separator), a URL, and an email-shaped literal are all rejected.
+        for bad in ("s3cr3t-inline-value", "https://vault/secret", "user@host"):
+            r.signing_key_ref = bad
+            with self.assertRaises(ValidationError):
+                r.full_clean()
+        r.signing_key_ref = ""  # blank ref is allowed (optional)
+        r.full_clean()
 
     def test_name_unique(self):
         make_realm("dup")
@@ -56,7 +68,17 @@ class FederationPeerModelTest(TestCase):
             realm=self.realm, peer_domain="secret.example.net",
             shared_secret_ref="federation/nc/secret.example.net",
         )
+        p.full_clean()
         self.assertEqual(p.shared_secret_ref, "federation/nc/secret.example.net")  # a path
+
+    def test_shared_secret_ref_rejects_inline_secret(self):
+        p = FederationPeer(realm=self.realm, peer_domain="inline.example.net")
+        for bad in ("s3cr3t-inline-value", "https://vault/secret", "user@host"):
+            p.shared_secret_ref = bad
+            with self.assertRaises(ValidationError):
+                p.full_clean()
+        p.shared_secret_ref = ""  # blank ref is allowed (optional)
+        p.full_clean()
 
     def test_blocked_peer(self):
         p = FederationPeer.objects.create(

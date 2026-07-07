@@ -11,10 +11,26 @@ SECRET POLICY: a federation signing key or a peering shared secret is NEVER a fi
 ``FederationRealm.signing_key_ref`` and ``FederationPeer.shared_secret_ref`` are OpenBao path
 references (the netbox-services convention); the secret value stays in OpenBao.
 """
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.urls import reverse
 from netbox.models import NetBoxModel
 from .choices import FederationDirectionChoices, FederationProtocolChoices, TrustLevelChoices
+
+
+def validate_secret_ref(value, field_name):
+    """Enforce the secret-boundary policy: a ``*_ref`` field holds an OpenBao KV PATH, never the
+    secret value. A path contains ``/`` and is neither a URL (``://``) nor a user@host / email
+    (``@``). Blank is allowed (the ref is optional). Raises ``ValidationError`` keyed to the field
+    so an inline literal (e.g. a bare secret or a full URL) is rejected at ``clean()`` time — which
+    NetBox's ``ValidatedModelSerializer`` runs, so the API path is covered too."""
+    if not value:
+        return
+    if "://" in value or "@" in value or "/" not in value:
+        raise ValidationError(
+            {field_name: f"{field_name} must be an OpenBao path (e.g. clients/app/svc/key), "
+                         "never the secret value or a URL."}
+        )
 
 
 class FederationRealm(NetBoxModel):
@@ -52,6 +68,10 @@ class FederationRealm(NetBoxModel):
     class Meta:
         ordering = ["name"]
         verbose_name = "Federation Realm"
+
+    def clean(self):
+        super().clean()
+        validate_secret_ref(self.signing_key_ref, "signing_key_ref")
 
     def __str__(self):
         return f"{self.name} ({self.protocol})"
@@ -98,6 +118,10 @@ class FederationPeer(NetBoxModel):
                 fields=["realm", "peer_domain"], name="netbox_federation_federationpeer_unique_realm_peer"
             ),
         ]
+
+    def clean(self):
+        super().clean()
+        validate_secret_ref(self.shared_secret_ref, "shared_secret_ref")
 
     def __str__(self):
         return f"{self.realm.name} ↔ {self.peer_domain}"
